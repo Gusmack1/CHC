@@ -107,9 +107,9 @@ Example:
 
 ```bash
 python gus_trace_tool.py --cli ^
-  --input EE.xlsx ^
+  --input input.xlsx ^
   --output insolvency_results.xlsx ^
-  --name-column "Debtor Name" ^
+  --name-column "Name" ^
   --start-row 1 ^
   --end-row 1000 ^
   --use-cache
@@ -120,7 +120,7 @@ Key arguments:
 - `--cli` – required to activate CLI mode.
 - `--input` – input Excel file path.
 - `--output` – output Excel file path.
-- `--name-column` – column header containing the company names.
+- `--name-column` – column header containing the debtor/company names (for example `"Name"`).
 - `--start-row` / `--end-row` – 1‑based inclusive row range.
 - `--api-key` – optional; if omitted, the tool uses `GUS_API_KEY` from env/config.
 - `--use-cache` / `--no-cache` – whether to re‑use cached API responses.
