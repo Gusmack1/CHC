@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual envs
+.venv/
+venv/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local data/cache
+*.pickle
+profiles.json
+config.ini
+
+# Excel inputs/outputs
+*.xlsx
+
+# PyInstaller / build artifacts
+build/
+dist/
+*.spec
+
+
