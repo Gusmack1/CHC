@@ -27,6 +27,19 @@ Companies using this tool can reduce manual Companies House lookups, standardise
 
 ---
 
+### Licensing
+
+- **Trial mode**:
+  - Free trial limited to **20 rows per session** in the GUI (and 20 rows per run in CLI).
+  - Designed for evaluation and small test batches only.
+
+- **Full licence**:
+  - **£1000 for 30 days** of **unlimited usage** on a single machine.
+  - You must use **your own Companies House API key**; the tool never ships with a live key.
+  - Licences are activated via a key entered in the app (Help → Enter License Key).
+
+---
+
 ### 1. Installation
 
 From the project directory (the folder containing `gus_trace_tool.py` and `requirements.txt`):

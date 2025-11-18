@@ -21,9 +21,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from fuzzywuzzy import fuzz
 import configparser
+import platform
+import hashlib
+import urllib.parse
 
 CONFIG_FILE = 'config.ini'
 SETTINGS_FILE = 'settings.json'
+LICENSE_FILE = 'license.json'
 
 def load_config():
     config = configparser.ConfigParser()
@@ -80,6 +84,30 @@ PREFIX_ALIGNMENT_BONUS_PER_WORD = 5.0
 
 APP_NAME = "Companies House Lookup"
 APP_VERSION = "1.0.0"
+TRIAL_MAX_ROWS = 20
+LICENSE_PRICE = "£1000 for 30 days"
+
+# Session-only tracker for how many rows have been processed in trial mode.
+trial_rows_used = 0
+
+LICENSE_EMAIL = "Angus_Mackay_@hotmail.com"
+MASTER_LICENSE_KEY = os.getenv("MASTER_LICENSE_KEY", "").strip()
+
+
+def get_machine_id():
+    """Return a stable machine identifier string for licence binding."""
+    # Prefer Windows COMPUTERNAME env var; fall back to platform.node().
+    mid = os.getenv("COMPUTERNAME") or platform.node() or ""
+    return mid.strip().upper()
+
+
+def get_machine_digest():
+    """Return a short hash of the machine id used inside licence keys."""
+    mid = get_machine_id()
+    if not mid:
+        return ""
+    digest = hashlib.sha256(mid.encode("utf-8")).hexdigest().upper()
+    return digest[:6]  # 6-hex-character machine code
 
 
 class ToolTip:
@@ -155,6 +183,44 @@ def save_settings(data):
     except Exception:
         # Failing to save settings is non-fatal; ignore.
         pass
+
+def load_license():
+    """Load license data from JSON, if any."""
+    if os.path.exists(LICENSE_FILE):
+        try:
+            with open(LICENSE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+def save_license(data):
+    """Persist license data to JSON."""
+    try:
+        with open(LICENSE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def get_license_status():
+    """
+    Return (is_valid, is_expired, expiry_date) for the current license.
+    expiry_date is a datetime.date or None.
+    """
+    data = load_license()
+    if not data:
+        return False, False, None
+    expiry_str = data.get('expiry')
+    if not expiry_str:
+        return False, False, None
+    try:
+        expiry = datetime.datetime.strptime(expiry_str, '%Y-%m-%d').date()
+    except Exception:
+        return False, False, None
+    today = datetime.date.today()
+    if expiry < today and data.get("type") != "master":
+        return False, True, expiry
+    return True, False, expiry
 
 insolvency_types = {
     "creditors-voluntary-liquidation": "Creditors' Voluntary Liquidation",
@@ -931,13 +997,119 @@ def show_message(title, message):
 
 def show_about():
     """Display a simple About dialog with version and contact info."""
+    is_valid, is_expired, expiry = get_license_status()
+    if is_valid and expiry:
+        if expiry.year >= 9999:
+            license_line = "License: Master licence (unlimited usage)"
+        else:
+            license_line = f"License: Active until {expiry.isoformat()}"
+    elif is_expired and expiry:
+        license_line = f"License: Expired on {expiry.isoformat()} (trial mode: 20 rows per session)"
+    else:
+        license_line = "License: Trial mode (up to 20 rows per session)"
+
+    machine_id = get_machine_id() or "UNKNOWN"
+    machine_info = f"Machine ID: {machine_id}\n"
+
     info = (
         f"{APP_NAME} v{APP_VERSION}\n\n"
         "Bulk Companies House lookup tool for Excel spreadsheets.\n\n"
+        f"{license_line}\n\n"
+        f"{machine_info}"
+        f"Commercial license pricing: {LICENSE_PRICE} (unlimited usage, own Companies House API key required).\n"
+        "Licences are bound to the machine ID shown above.\n\n"
         "Developer: Angus Mackay\n"
         "Contact: Angus_Mackay_@hotmail.com"
     )
     messagebox.showinfo("About", info)
+
+def purchase_license_email():
+    """Open a pre-populated email to request a 30-day licence for this machine."""
+    machine_id = get_machine_id() or "UNKNOWN"
+    subject = "Purchase a 30 day licence for Companies House Lookup"
+    body = (
+        f"Hi Angus,\n\n"
+        f"I would like to purchase a 30 day licence for Companies House Lookup.\n\n"
+        f"Machine ID: {machine_id}\n"
+        f"App version: {APP_VERSION}\n\n"
+        f"Regards,\n"
+    )
+    mailto = f"mailto:{LICENSE_EMAIL}?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(body)}"
+    webbrowser.open(mailto)
+
+def contact_support_email():
+    """Open a pre-populated email to contact support."""
+    machine_id = get_machine_id() or "UNKNOWN"
+    subject = "Support request - Companies House Lookup"
+    body = (
+        f"Hi Angus,\n\n"
+        f"I need help with Companies House Lookup.\n\n"
+        f"Machine ID: {machine_id}\n"
+        f"App version: {APP_VERSION}\n\n"
+        f"Details:\n"
+    )
+    mailto = f"mailto:{LICENSE_EMAIL}?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(body)}"
+    webbrowser.open(mailto)
+
+def enter_license_key():
+    """
+    Prompt the user for a license key.
+    Expected format: CHL-YYYYMMDD-MMMNNN-XXXX where:
+      - YYYYMMDD is the licence expiry date
+      - MMMNNN is a 6-character machine code tied to this computer
+    For example: CHL-20251231-ABC123-ABCD for a licence valid until 31st Dec 2025.
+    """
+    key = simpledialog.askstring(
+        "Enter License Key",
+        "Enter your license key (format: CHL-YYYYMMDD-MMMNNN-XXXX).",
+    )
+    if not key:
+        return
+    key = key.strip()
+    # Master licence: if the entered key matches the built-in master key
+    # or the secret MASTER_LICENSE_KEY provided via environment variable,
+    # accept it as an unlimited licence on this machine regardless of
+    # machine code.
+    if key == "CHL-MASTER-UNLIMITED-ANGUS-2025" or (MASTER_LICENSE_KEY and key == MASTER_LICENSE_KEY):
+        expiry = datetime.date(9999, 12, 31)
+        data = {"key": key, "expiry": expiry.isoformat(), "type": "master"}
+        save_license(data)
+        messagebox.showinfo(
+            "Master License Activated",
+            "Master licence successfully activated with unlimited usage.",
+        )
+        return
+    parts = key.split("-")
+    if len(parts) != 4 or parts[0] != "CHL":
+        messagebox.showerror("Invalid License", "License key must look like CHL-YYYYMMDD-MMMNNN-XXXX.")
+        return
+    date_part = parts[1]
+    machine_part = parts[2]
+    if len(date_part) != 8 or not date_part.isdigit():
+        messagebox.showerror("Invalid License", "License key must contain an 8-digit date after 'CHL-' (e.g. 20251231).")
+        return
+    expected_machine = get_machine_digest()
+    if not expected_machine:
+        messagebox.showerror("Machine ID Error", "Could not determine machine ID for this computer.")
+        return
+    if machine_part.upper() != expected_machine:
+        messagebox.showerror(
+            "Invalid License",
+            "This licence key is not issued for this computer.\n"
+            "Please request a new key using 'Help → Purchase 30-day Licence'.",
+        )
+        return
+    try:
+        expiry = datetime.datetime.strptime(date_part, '%Y%m%d').date()
+    except Exception:
+        messagebox.showerror("Invalid License", "Could not parse expiry date from license key.")
+        return
+    data = {"key": key, "expiry": expiry.isoformat(), "type": "standard"}
+    save_license(data)
+    messagebox.showinfo(
+        "License Activated",
+        f"License successfully activated.\nValid until {expiry.isoformat()}."
+    )
 
 def save_results(results, output_file, name_column, selected_columns, graph_selections):
     full_df = pd.DataFrame(results)
@@ -1265,29 +1437,8 @@ def disable_widgets():
 def enable_widgets():
     set_widget_state(root, 'normal', [])
 
-custom_api_key = ''
-
-def on_ch_mode_change(*args):
-    global custom_api_key
-    mode = ch_mode_var.get()
-    if mode == "Gus's API":
-        # Remember whatever was in the box as the custom key (if not Gus's key already)
-        current = api_key_entry.get().strip()
-        if current and current != GUS_API_KEY:
-            custom_api_key = current
-        api_key_entry.delete(0, tk.END)
-        api_key_entry.insert(0, GUS_API_KEY)
-    elif mode == "Blank":
-        # Store any non-blank, non-Gus key as custom, then clear
-        current = api_key_entry.get().strip()
-        if current and current not in ("", GUS_API_KEY):
-            custom_api_key = current
-        api_key_entry.delete(0, tk.END)
-    else:  # Custom
-        api_key_entry.delete(0, tk.END)
-        api_key_entry.insert(0, custom_api_key if custom_api_key else '')
-
 def start_processing():
+    global trial_rows_used
     file_path = file_var.get()
     if not file_path:
         messagebox.showerror("Error", "Please select a file.")
@@ -1302,6 +1453,38 @@ def start_processing():
     except ValueError:
         messagebox.showerror("Error", "Invalid row range.")
         return
+    row_count = max(0, end_row - start_row + 1)
+
+    # Enforce licensing: trial mode is limited to TRIAL_MAX_ROWS rows per run.
+    is_valid, is_expired, expiry = get_license_status()
+    if not is_valid:
+        # Per-session cap: once TRIAL_MAX_ROWS rows have been processed in this session,
+        # require either a license or an app restart.
+        if trial_rows_used >= TRIAL_MAX_ROWS:
+            messagebox.showerror(
+                "Trial limit reached",
+                f"You have already processed {trial_rows_used} rows in this session.\n\n"
+                f"Trial mode allows a total of {TRIAL_MAX_ROWS} rows per session.\n"
+                "Please restart the application or enter a license key (Help → Enter License Key).",
+            )
+            return
+        remaining = TRIAL_MAX_ROWS - trial_rows_used
+        if is_expired and expiry:
+            messagebox.showerror(
+                "License expired",
+                f"Your license expired on {expiry.isoformat()}.\n"
+                f"Trial mode allows up to {TRIAL_MAX_ROWS} rows per session.\n"
+                f"You selected {row_count} rows.",
+            )
+            return
+        if row_count > remaining:
+            messagebox.showerror(
+                "Trial limit",
+                f"Trial mode allows a total of {TRIAL_MAX_ROWS} rows per session.\n"
+                f"You have {remaining} rows remaining in this session and selected {row_count} rows.\n\n"
+                "Reduce the row range, restart the application, or enter a license key (Help → Enter License Key).",
+            )
+            return
     api_key = api_key_entry.get().strip()
     if not api_key:
         messagebox.showerror("Error", "API key is required.")
@@ -1338,6 +1521,10 @@ def start_processing():
     thread = threading.Thread(target=process_file, args=(file_path, start_row, end_row, api_key, output_file, pause_event, stop_event, progress_bar, status_label, name_column, selected_columns, graph_selections, use_cache))
     thread.daemon = True
     thread.start()
+
+    # In trial mode, count the rows that will be processed in this session.
+    if not is_valid:
+        trial_rows_used += row_count
     disable_widgets()
     pause_button.config(text="Pause", command=lambda: toggle_pause(pause_event, pause_button))
     stop_button.config(command=stop_event.set)
@@ -1502,6 +1689,26 @@ def save_profile():
     profile_var.set(profile_name)
     load_profile()
 
+def create_new_profile_from_menu():
+    """Handler for 'Create New Profile...' option in the profile dropdown."""
+    profile_name = simpledialog.askstring("Create Profile", "Enter new profile name:")
+    if not profile_name:
+        return
+    if profile_name == "Default":
+        messagebox.showerror("Error", "Cannot use Default as profile name.")
+        return
+    profiles = load_profiles()
+    if profile_name in profiles:
+        messagebox.showerror("Error", "A profile with that name already exists.")
+        return
+    selected = list(selected_listbox.get(0, END))
+    profiles[profile_name] = selected
+    with open('profiles.json', 'w') as f:
+        json.dump(profiles, f)
+    load_profile_menu()
+    profile_var.set(profile_name)
+    load_profile()
+
 def delete_profile():
     profile_name = profile_var.get()
     if profile_name == "Default":
@@ -1520,8 +1727,10 @@ def load_profiles():
     if os.path.exists('profiles.json'):
         with open('profiles.json', 'r') as f:
             profiles = json.load(f)
-            if 'Default' in profiles:
-                del profiles['Default']
+            # Clean up reserved or legacy profile names.
+            for reserved in ['Default', 'Gus', 'Gus Profile']:
+                if reserved in profiles:
+                    del profiles[reserved]
             return profiles
     return {}
 
@@ -1542,6 +1751,7 @@ def load_profile_menu():
     menu = profile_menu["menu"]
     menu.delete(0, "end")
     menu.add_command(label="Default", command=lambda: profile_var.set("Default"))
+    menu.add_command(label="Create New Profile...", command=create_new_profile_from_menu)
     for p in sorted(profiles.keys()):
         menu.add_command(label=p, command=lambda value=p: profile_var.set(value))
 
@@ -1562,12 +1772,24 @@ def update_est():
         time_sec = (total_calls / calls_per_window) * window_seconds
         time_min = time_sec / 60
         time_hours = time_min / 60
-        est_label.config(
-            text=(
-                f"Est. time: {time_min:.1f} min (~{time_hours:.2f} h) "
-                f"(total API calls ≈ {int(total_calls)})"
+        # Include trial information when no valid licence is present.
+        is_valid, is_expired, expiry = get_license_status()
+        if not is_valid:
+            remaining_trial = max(0, TRIAL_MAX_ROWS - trial_rows_used)
+            est_label.config(
+                text=(
+                    f"Est. time: {time_min:.1f} min (~{time_hours:.2f} h) "
+                    f"(total API calls ≈ {int(total_calls)}) – "
+                    f"Trial rows remaining this session: {remaining_trial}"
+                )
             )
-        )
+        else:
+            est_label.config(
+                text=(
+                    f"Est. time: {time_min:.1f} min (~{time_hours:.2f} h) "
+                    f"(total API calls ≈ {int(total_calls)})"
+                )
+            )
     except ValueError:
         est_label.config(text="Invalid range")
 
@@ -1581,9 +1803,14 @@ def persist_runtime_settings():
         current['spreadsheet'] = file_var.get()
         current['output_file'] = output_var.get()
         current['name_column'] = name_column_var.get()
-        current['ch_mode'] = ch_mode_var.get()
         current['profile'] = profile_var.get()
         current['use_cache'] = bool(use_cache_var.get())
+        current['remember_api'] = bool(save_api_var.get())
+        # Only persist the API key when the user has opted in.
+        if save_api_var.get():
+            current['api_key'] = api_key_entry.get().strip()
+        else:
+            current.pop('api_key', None)
         current['verbose_log'] = bool(verbose_var.get())
         current['window_geometry'] = root.winfo_geometry()
         save_settings(current)
@@ -1591,11 +1818,12 @@ def persist_runtime_settings():
         pass
 
 def create_gui():
-    global root, file_var, output_var, name_column_var, ch_mode_var, insolvent_var, profile_var, use_cache_var
+    global root, file_var, output_var, name_column_var, insolvent_var, profile_var, use_cache_var
     global start_row_entry, end_row_entry, name_column_menu, avg_calls, est_label
     global api_key_entry, ch_link_label, available_listbox, selected_listbox, profile_menu
     global embedded_log_text, active_log_text, is_detached, log_window, detached_log_text
     global pause_button, stop_button, toggle_log_button, detach_button, status_frame, verbose_check_button
+    global save_api_var
 
     root = tk.Tk()
     root.title(f"{APP_NAME} v{APP_VERSION}")
@@ -1614,7 +1842,7 @@ def create_gui():
     # Load persisted settings (if any) before creating widgets.
     settings = load_settings()
 
-    # Menu bar: File (Exit, Clear Caches) and Help (About).
+    # Menu bar: File (Exit, Clear Caches) and Help (licensing, support, About).
     menubar = tk.Menu(root)
     file_menu = tk.Menu(menubar, tearoff=0)
     file_menu.add_command(label="Clear Caches", command=lambda: clear_all_caches(delete_files=True))
@@ -1623,6 +1851,10 @@ def create_gui():
     menubar.add_cascade(label="File", menu=file_menu)
 
     help_menu = tk.Menu(menubar, tearoff=0)
+    help_menu.add_command(label="Purchase 30-day Licence", command=purchase_license_email)
+    help_menu.add_command(label="Email Support", command=contact_support_email)
+    help_menu.add_command(label="Enter License Key", command=enter_license_key)
+    help_menu.add_separator()
     help_menu.add_command(label="About", command=show_about)
     menubar.add_cascade(label="Help", menu=help_menu)
 
@@ -1644,10 +1876,12 @@ def create_gui():
     file_var = tk.StringVar(value=settings.get("spreadsheet", ""))
     output_var = tk.StringVar(value=settings.get("output_file", "insolvency_results.xlsx"))
     name_column_var = tk.StringVar(value=settings.get("name_column", ""))
-    ch_mode_var = tk.StringVar(value=settings.get("ch_mode", "Custom"))
     insolvent_var = tk.BooleanVar(value=True)
     profile_var = tk.StringVar(value=settings.get("profile", "Default"))
     use_cache_var = tk.BooleanVar(value=settings.get("use_cache", True))
+    # API key persistence toggle and stored value; default to saving for convenience.
+    save_api_var = tk.BooleanVar(value=settings.get("remember_api", True))
+    stored_api = settings.get("api_key", "") if save_api_var.get() else ""
     # Verbose logging toggle for GUI log view.
     global verbose_var
     verbose_var = tk.BooleanVar(value=settings.get("verbose_log", False))
@@ -1689,17 +1923,16 @@ def create_gui():
     api_frame.grid(row=1, column=0, sticky='ew', pady=5)
     api_frame.columnconfigure(1, weight=1)
 
-    ttk.Label(api_frame, text="Companies House API Mode:").grid(row=0, column=0, sticky='e')
-    ch_mode_menu = ttk.OptionMenu(api_frame, ch_mode_var, "Custom", "Gus's API", "Blank", command=on_ch_mode_change)
-    ch_mode_menu.grid(row=0, column=1, sticky='ew')
-
-    ttk.Label(api_frame, text="Companies House API Key:").grid(row=1, column=0, sticky='e')
+    ttk.Label(api_frame, text="Companies House API Key:").grid(row=0, column=0, sticky='e')
     api_key_entry = ttk.Entry(api_frame)
-    api_key_entry.grid(row=1, column=1, sticky='ew')
+    api_key_entry.insert(0, stored_api)
+    api_key_entry.grid(row=0, column=1, sticky='ew')
     ch_link_label = tk.Label(api_frame, text="Get Companies House API Key", fg="blue", cursor="hand2", bg="#f0f0f0")
-    ch_link_label.grid(row=1, column=2)
+    ch_link_label.grid(row=0, column=2)
     ch_link_label.bind("<Button-1>", lambda e: webbrowser.open_new("https://developer.company-information.service.gov.uk/get-started"))
 
+    save_api_check = ttk.Checkbutton(api_frame, text="Save API key for next session", variable=save_api_var)
+    save_api_check.grid(row=1, column=1, sticky='w', pady=(2, 0))
     use_cache_check = ttk.Checkbutton(api_frame, text="Use Cache", variable=use_cache_var)
     use_cache_check.grid(row=2, column=1, sticky='w')
     verbose_check_button = ttk.Checkbutton(api_frame, text="Verbose log", variable=verbose_var)
@@ -1892,6 +2125,16 @@ def process_file_cli(file_path, start_row, end_row, api_key, output_file, name_c
     if row_count <= 0:
         print("[WARN] No rows to process for the given range.")
         return
+
+    # Enforce the same licensing limits as the GUI.
+    is_valid, is_expired, expiry = get_license_status()
+    if not is_valid:
+        if is_expired and expiry:
+            print(f"[ERROR] License expired on {expiry.isoformat()}. Trial mode allows up to {TRIAL_MAX_ROWS} rows per session.")
+            return
+        if row_count > TRIAL_MAX_ROWS:
+            print(f"[ERROR] Trial mode allows up to {TRIAL_MAX_ROWS} rows per session. You requested {row_count} rows.")
+            return
 
     print(f"[INFO] Processing rows {start_row} to {row_end} ({row_count} total)")
 
